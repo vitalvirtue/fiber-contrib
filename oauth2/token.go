@@ -156,3 +156,20 @@ func validateJWT(config Config, tokenString string) (jwt.MapClaims, error) {
 
 	return claims, nil
 }
+
+// ValidateToken validates the given token using the provided TokenStorage.
+func ValidateToken(token string, storage TokenStorage) (map[string]interface{}, error) {
+	// Retrieve claims from TokenStorage
+	claims, err := storage.Get(token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve token: %w", err)
+	}
+
+	// Check for expiration
+	expiry, ok := claims["expiry"].(time.Time)
+	if !ok || time.Now().After(expiry) {
+		return nil, ErrTokenExpired
+	}
+
+	return claims, nil
+}

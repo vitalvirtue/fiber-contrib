@@ -44,7 +44,7 @@ func TestOAuth2Middleware(t *testing.T) {
 	}
 
 	// Apply middleware
-	app.Use(oauth2.OAuth2(config))
+	app.Use(oauth2.New(config))
 
 	// Protected Route
 	app.Get("/secure", func(c *fiber.Ctx) error {
