@@ -2,6 +2,7 @@ package oauth2
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -73,7 +74,7 @@ func (s *InMemoryStorage) Get(token string) (map[string]interface{}, error) {
 
 	if time.Now().After(entry.expiration) {
 		// Token expired, delete it
-		s.Delete(token)
+		_ = s.Delete(token)
 		return nil, errors.New("token expired")
 	}
 
@@ -138,7 +139,19 @@ func (r *RedisStorage) Save(token string, claims map[string]interface{}, expirat
 		return errors.New("expiration must be greater than zero")
 	}
 
-	return r.client.HSet(r.ctx, token, claims).Err()
+	// Serialize claims to JSON for storage in Redis
+	data, err := json.Marshal(claims)
+	if err != nil {
+		return errors.New("failed to marshal token claims")
+	}
+
+	// Use SET command with expiration
+	err = r.client.Set(r.ctx, token, data, expiration).Err()
+	if err != nil {
+		return errors.New("failed to save token in Redis")
+	}
+
+	return nil
 }
 
 // Get retrieves the claims for a given token.
@@ -147,15 +160,18 @@ func (r *RedisStorage) Get(token string) (map[string]interface{}, error) {
 		return nil, errors.New("token cannot be empty")
 	}
 
-	result, err := r.client.HGetAll(r.ctx, token).Result()
-	if err != nil || len(result) == 0 {
+	data, err := r.client.Get(r.ctx, token).Result()
+	if err == redis.Nil {
 		return nil, errors.New("token not found")
+	} else if err != nil {
+		return nil, errors.New("failed to retrieve token from Redis")
 	}
 
-	// Convert map[string]string to map[string]interface{}
+	// Deserialize JSON data back into claims
 	claims := make(map[string]interface{})
-	for k, v := range result {
-		claims[k] = v
+	err = json.Unmarshal([]byte(data), &claims)
+	if err != nil {
+		return nil, errors.New("failed to unmarshal token claims")
 	}
 
 	return claims, nil
@@ -163,10 +179,19 @@ func (r *RedisStorage) Get(token string) (map[string]interface{}, error) {
 
 // Delete removes a token from Redis.
 func (r *RedisStorage) Delete(token string) error {
-	return r.client.Del(r.ctx, token).Err()
+	if token == "" {
+		return errors.New("token cannot be empty")
+	}
+
+	err := r.client.Del(r.ctx, token).Err()
+	if err != nil {
+		return errors.New("failed to delete token from Redis")
+	}
+
+	return nil
 }
 
-// Cleanup does nothing in Redis since keys expire automatically.
+// Cleanup is not needed in Redis since keys expire automatically.
 func (r *RedisStorage) Cleanup() error {
 	return nil
 }
