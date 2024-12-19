@@ -47,8 +47,7 @@ func SaveToken(storage TokenStorage, token Token, claims map[string]interface{})
 	return nil
 }
 
-// RefreshToken renews an access token using the refresh token.
-func RefreshToken(provider ProviderConfig, currentToken Token) (*Token, error) {
+func RefreshToken(provider ProviderConfig, currentToken Token, storage TokenStorage) (*Token, error) {
 	if currentToken.RefreshToken == "" {
 		return nil, ErrRefreshTokenMissing
 	}
@@ -83,19 +82,37 @@ func RefreshToken(provider ProviderConfig, currentToken Token) (*Token, error) {
 		newToken.Expiry = time.Now().Add(1 * time.Hour) // Default: 1 hour
 	}
 
+	// Remove the old Refresh Token from storage
+	if storage != nil {
+		if err := storage.Delete(currentToken.RefreshToken); err != nil {
+			return nil, fmt.Errorf("failed to delete old refresh token: %w", err)
+		}
+	}
+
+	// Save the new Refresh Token
+	if storage != nil {
+		err = storage.Save(newToken.RefreshToken, map[string]interface{}{
+			"scope":  newToken.Scope,
+			"expiry": newToken.Expiry,
+		}, time.Until(newToken.Expiry))
+		if err != nil {
+			return nil, fmt.Errorf("failed to save new refresh token: %w", err)
+		}
+	}
+
 	return &newToken, nil
 }
 
-// RevokeToken invalidates a token using the provider's revoke endpoint.
 func RevokeToken(provider ProviderConfig, token string, storage TokenStorage) error {
 	if token == "" {
 		return ErrTokenInvalid
 	}
 
 	// Remove the token from storage
-	err := storage.Delete(token)
-	if err != nil {
-		return fmt.Errorf("failed to delete token from storage: %w", err)
+	if storage != nil {
+		if err := storage.Delete(token); err != nil {
+			return fmt.Errorf("failed to delete token from storage: %w", err)
+		}
 	}
 
 	// Revoke token with provider
@@ -109,7 +126,7 @@ func RevokeToken(provider ProviderConfig, token string, storage TokenStorage) er
 	req.URL.RawQuery = q.Encode()
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to revoke token with provider: %w", err)
