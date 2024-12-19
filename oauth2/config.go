@@ -9,12 +9,14 @@ import (
 
 // Config defines the global OAuth2 configuration
 type Config struct {
-	Providers 		 []ProviderConfig // List of Oauth2 providers
-	RedirectURL			string          // Global callback URL
-	Scopes					[]string        // Default scopes for OAuth2 flows
-	TokenStorage		TokenStorage    // Token storage interface
-	Timeout					time.Duration   // Timeout for requests to OAuth2 providers
-	EnableDebugLogs bool						// Enable debug logs fo troubleshooting
+	Providers       []ProviderConfig // List of Oauth2 providers
+	RedirectURL     string           // Global callback URL
+	Scopes          []string         // Default scopes for OAuth2 flows
+	TokenStorage    TokenStorage     // Token storage interface
+	Timeout         time.Duration    // Timeout for requests to OAuth2 providers
+	EnableDebugLogs bool             // Enable debug logs for troubleshooting
+	JWTSecretKey    []byte           // Secret key for signing JWT tokens
+	UseJWTForRefresh bool            // Use JWT for refresh tokens (if false, use UUID)
 }
 
 // ProviderConfig defines the configuration for an individual OAuth2 provider
@@ -33,12 +35,16 @@ type ProviderConfig struct {
 // DefaultConfig returns a Config struct with default values
 func DefaultConfig() Config {
 	return Config{
-		Providers:      []ProviderConfig{},
-		Scopes:         []string{"openid", "email", "profile"},
-		Timeout:        5 * time.Second,
+		Providers:       []ProviderConfig{},
+		Scopes:          []string{"openid", "email", "profile"},
+		Timeout:         5 * time.Second,
 		EnableDebugLogs: false,
+		JWTSecretKey:    nil, // User defined secret key for JWT
+		TokenStorage:    nil,
+		UseJWTForRefresh: true, // Default: use JWT for refresh tokens
 	}
 }
+
 
 // Validate checks if the Config is correctly set up
 func (c *Config) Validate() error {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 )
 
 func generateState() (string, error) {
@@ -127,6 +128,80 @@ func CallbackHandler(providerName string, config Config) fiber.Handler {
 	}
 }
 
+func RefreshTokenHandler(config Config) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		// Get the refresh token from the request body
+		refreshToken := c.FormValue("refresh_token")
+		if refreshToken == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Missing refresh token"})
+		}
+
+		// Validate the refresh token
+		var userID string
+		if config.UseJWTForRefresh {
+			// Validate JWT refresh token
+			claims, err := validateJWT(config, refreshToken)
+			if err != nil {
+				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid refresh token"})
+			}
+			userID, _ = claims["sub"].(string)
+		} else {
+			// Validate UUID refresh token
+			claims, err := config.TokenStorage.Get(refreshToken)
+			if err != nil {
+				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid or expired refresh token"})
+			}
+			userID, _ = claims["user_id"].(string)
+		}
+
+		if userID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token claims"})
+		}
+
+		// Remove the old refresh token from storage
+		if !config.UseJWTForRefresh && config.TokenStorage != nil {
+			if err := config.TokenStorage.Delete(refreshToken); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to delete old refresh token"})
+			}
+		}
+
+		// Generate a new access token
+		newAccessToken, err := createJWT(config, userID, 15*time.Minute) // 15-minute validity
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create access token"})
+		}
+
+		var newRefreshToken string
+		if config.UseJWTForRefresh {
+			// Generate a new JWT refresh token
+			newRefreshToken, err = createJWT(config, userID, 24*time.Hour) // 24-hour validity
+		} else {
+			// Generate a new UUID refresh token
+			newRefreshToken = generateToken()
+		}
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create refresh token"})
+		}
+
+		// Save the new refresh token to storage (if UUID)
+		if !config.UseJWTForRefresh && config.TokenStorage != nil {
+			err = config.TokenStorage.Save(newRefreshToken, map[string]interface{}{
+				"user_id": userID,
+			}, 24*time.Hour)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to save new refresh token"})
+			}
+		}
+
+		// Return the new tokens to the client
+		return c.JSON(fiber.Map{
+			"access_token":  newAccessToken,
+			"refresh_token": newRefreshToken,
+			"expires_in":    15 * 60, // 15 minutes in seconds
+		})
+	}
+}
+
 // exchangeCodeForToken exchanges the authorization code for an access token.
 func exchangeCodeForToken(provider ProviderConfig, code, redirectURL string) (*Token, error) {
 	data := url.Values{}
@@ -192,16 +267,15 @@ func ClientCredentialsHandler(config Config) fiber.Handler {
 		}
 
 		// Create token
-		token := Token{
-			AccessToken:  generateToken(),
-			Expiry:       time.Now().Add(1 * time.Hour),
-			TokenType:    "Bearer",
+		newAccessToken, err := createJWT(config, clientID, 1*time.Hour)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create access token"})
 		}
 
 		return c.JSON(fiber.Map{
-			"access_token": token.AccessToken,
-			"expires_in":   token.Expiry.Sub(time.Now()).Seconds(),
-			"token_type":   token.TokenType,
+			"access_token": newAccessToken,
+			"expires_in":   3600, // 1 hour in seconds
+			"token_type":   "Bearer",
 		})
 	}
 }
@@ -216,7 +290,5 @@ func validateClientCredentials(providers []ProviderConfig, clientID, clientSecre
 }
 
 func generateToken() string {
-	b := make([]byte, 32)
-	_, _ = rand.Read(b)
-	return base64.URLEncoding.EncodeToString(b)
+	return uuid.New().String()
 }

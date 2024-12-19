@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // Token represents an OAuth2 access token with its metadata.
@@ -20,31 +22,6 @@ type Token struct {
 // IsExpired checks if the token has expired.
 func (t *Token) IsExpired() bool {
 	return time.Now().After(t.Expiry)
-}
-
-// SaveToken stores a token in the provided storage backend.
-func SaveToken(storage TokenStorage, token Token, claims map[string]interface{}) error {
-	if storage == nil {
-		return ErrTokenStorageMissing
-	}
-
-	// Add expiration info to claims
-	claims["expiry"] = token.Expiry
-	claims["scope"] = token.Scope
-
-	// Calculate token expiration duration
-	expiryDuration := time.Until(token.Expiry)
-	if expiryDuration <= 0 {
-		return ErrTokenExpired
-	}
-
-	// Save the token to storage
-	err := storage.Save(token.AccessToken, claims, expiryDuration)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func RefreshToken(provider ProviderConfig, currentToken Token, storage TokenStorage) (*Token, error) {
@@ -138,4 +115,44 @@ func RevokeToken(provider ProviderConfig, token string, storage TokenStorage) er
 	}
 
 	return nil
+}
+
+func createJWT(config Config, subject string, expiry time.Duration) (string, error) {
+	if len(config.JWTSecretKey) == 0 {
+		return "", fmt.Errorf("JWT secret key is not configured")
+	}
+
+	claims := jwt.MapClaims{
+		"sub": subject,
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(expiry).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(config.JWTSecretKey)
+}
+
+func validateJWT(config Config, tokenString string) (jwt.MapClaims, error) {
+	if len(config.JWTSecretKey) == 0 {
+		return nil, fmt.Errorf("JWT secret key is not configured")
+	}
+
+	// Parse and validate the JWT
+	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return config.JWTSecretKey, nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("invalid token: %w", err)
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("invalid claims or token")
+	}
+
+	return claims, nil
 }
